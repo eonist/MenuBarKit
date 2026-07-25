@@ -91,10 +91,6 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
     /// against the off-screen button position, collapsing the popover x-origin to 0 —
     /// the open-time side-jump. Guard the pre-show write in openPopover with this.
     ///
-    /// The same guard is applied inside applyContentSize to prevent live resizes
-    /// (row expand, nav width change) from triggering the same jump while the
-    /// popover is open and the menubar is hidden.
-    ///
     /// WHY > and not >=:
     /// buttonY == screenH is the normal resting position of the status button window
     /// (flush with the screen top edge). Only buttonY > screenH means the menubar has
@@ -259,19 +255,6 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         guard clamped.width > 0, clamped.height > 0 else { return }
         guard abs(popover.contentSize.width - clamped.width) > 1
            || abs(popover.contentSize.height - clamped.height) > 1 else { return }
-
-        // GUARD: skip the contentSize write entirely while the popover is shown
-        // and the auto-hide menubar is hidden.
-        // AppKit re-runs full anchor geometry on every contentSize write. Against
-        // an off-screen button that collapses the popover x-origin to 0 — the
-        // entire window jumps. The same guard already protects openPopover.
-        // Applies to all live resizes: row expand, nav width change, scroll cap.
-        if popover.isShown && isMenuBarHidden {
-            mbkLog("PopoverController",
-                   "applyContentSize -- menubar hidden, SKIP write (\(clamped.width),\(clamped.height))")
-            return
-        }
-
         guard popover.isShown,
               let window = hostingController.view.window,
               let anchor = anchorPoint else {
