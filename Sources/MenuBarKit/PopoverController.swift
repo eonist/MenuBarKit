@@ -86,25 +86,32 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
     /// Returns true when the macOS auto-hide menubar is currently hidden (slid off-screen).
     ///
     /// When hidden, the status item button window slides above the top edge of the screen:
-    /// button.window?.frame.maxY > screen.frame.height, or the button's screen drops to nil.
-    /// Writing contentSize in this state causes AppKit to re-run full anchor geometry
-    /// against the off-screen button position, collapsing the popover x-origin to 0 —
-    /// the open-time side-jump. Guard the pre-show write in openPopover with this.
+    /// button.window?.frame.maxY > screen.frame.height.
+    ///
+    /// WHY we require a non-nil screen AND buttonY > screenH (not screenH < 0 alone):
+    /// A nil screen (button.window?.screen == nil) occurs transiently during route
+    /// transitions — SwiftUI tears down and remounts the view tree and the button
+    /// window briefly loses its screen association. Treating nil screen as "hidden"
+    /// produces false positives that skip setFrameOrigin during normal navigation.
+    /// We only treat the menubar as hidden when we have a real screen measurement
+    /// AND the button window is provably above the screen top edge.
     ///
     /// WHY > and not >=:
-    /// buttonY == screenH is the normal resting position of the status button window
-    /// (flush with the screen top edge). Only buttonY > screenH means the menubar has
-    /// actually slid off-screen in auto-hide mode. Using >= produced a false-positive on
-    /// first open, causing the pre-show contentSize write to be skipped.
+    /// buttonY == screenH is the normal resting position (flush with screen top).
+    /// Only buttonY > screenH means the menubar has actually slid off-screen.
     ///
-    /// screenH < 0 signals a nil screen — skip in both cases.
-    /// Fix ported from commit 541c20fe (MBK example app, run-bot#2237/#2239).
+    /// Used to guard setFrameOrigin in applyContentSize and the pre-show
+    /// contentSize write in openPopover.
     private var isMenuBarHidden: Bool {
-        guard let button = statusItem.button else { return false }
-        let buttonScreen = button.window?.screen
-        let screenH = buttonScreen.map { $0.frame.height } ?? -1
+        guard let button = statusItem.button,
+              let screen = button.window?.screen else {
+            // Nil screen = transient state, not a hidden menubar.
+            mbkLog("PopoverController", "isMenuBarHidden=false (nil screen — transient)")
+            return false
+        }
+        let screenH = screen.frame.height
         let buttonY = button.window?.frame.maxY ?? -1
-        let hidden = screenH < 0 || buttonY > screenH
+        let hidden = buttonY > screenH
         mbkLog("PopoverController", "isMenuBarHidden=\(hidden) buttonY=\(buttonY) screenH=\(screenH)")
         return hidden
     }
@@ -264,18 +271,33 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
                    "applyContentSize -- not shown, WRITE (\(clamped.width),\(clamped.height))")
             return
         }
-        // Popover is shown — write contentSize then re-center using the fixed session anchor.
+        // Always write contentSize so the popover tracks SwiftUI content size correctly.
+        // Skipping the write causes stale sizes: GR fires the real size immediately
+        // after the next show() and the panel jumps from stale to live in one frame.
+        popover.contentSize = clamped
+
+        // Only call setFrameOrigin when the menubar is visible.
+        // When the auto-hide menubar is hidden the button is off-screen; calling
+        // setFrameOrigin against an off-screen anchor collapses x to 0 — the entire
+        // window jumps to the left edge. The contentSize write alone does not cause
+        // this jump — AppKit keeps the window in place without a setFrameOrigin call.
+        if isMenuBarHidden {
+            mbkLog("PopoverController",
+                   "applyContentSize -- menubar hidden, WRITE (\(clamped.width),\(clamped.height)) SKIP setFrameOrigin")
+            return
+        }
+
+        // Menubar visible — re-center using the fixed session anchor.
         // anchor.x = window.frame.midX captured at show-time (popoverWillShow).
         // window.frame.width is read AFTER the contentSize write so AppKit has
         // already committed the new frame width synchronously.
-        popover.contentSize = clamped
         let newOrigin = NSPoint(
             x: anchor.x - window.frame.width / 2,
             y: anchor.y - window.frame.height
         )
         window.setFrameOrigin(newOrigin)
         mbkLog("PopoverController",
-               "applyContentSize -- WRITE (\(clamped.width),\(clamped.height)) anchor=\(anchor) w=\(window.frame.width) origin=\(newOrigin)")
+               "applyContentSize -- WRITE+REPOSITION (\(clamped.width),\(clamped.height)) anchor=\(anchor) w=\(window.frame.width) origin=\(newOrigin)")
     }
 
     private func setupWorkspaceObserver() {
