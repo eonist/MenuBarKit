@@ -93,14 +93,14 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
 
     // MARK: - shouldSkipReposition
 
-    /// Returns true when setFrameOrigin must be skipped.
+    /// Returns true when setFrame must be skipped.
     ///
     /// Two cases where repositioning is unsafe:
     ///
     /// 1. MENUBAR HIDDEN (buttonY > screenH):
     ///    The status item button window has slid above the screen top edge.
     ///    buttonMidX = buttonWin.frame.minX + button.frame.midX resolves to
-    ///    an off-screen X coordinate. setFrameOrigin with that value moves
+    ///    an off-screen X coordinate. setFrame with that value moves
     ///    the popover window to the top-right corner (run-bot #2268).
     ///
     /// 2. NIL SCREEN:
@@ -109,7 +109,7 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
     ///    only a brief transient and screen is never nil in practice. In
     ///    menubar-HIDDEN mode screen is nil on EVERY nav transition because the
     ///    button window is off-screen and has no associated screen object.
-    ///    Proceeding with setFrameOrigin when screen==nil fires the arrow to
+    ///    Proceeding with setFrame when screen==nil fires the arrow to
     ///    the top-right corner. Skip reposition; contentSize write still occurs.
     ///
     /// WHY > and not >= for buttonY:
@@ -121,9 +121,6 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
             return true
         }
         guard let screen = button.window?.screen else {
-            // nil screen — either transient during nav (menubar visible) or
-            // permanent while menubar is hidden. Either way, buttonMidX is
-            // unreliable. Skip setFrameOrigin.
             mbkLog("PopoverController", "shouldSkipReposition=true (nil screen)")
             return true
         }
@@ -161,10 +158,6 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         onWillShow?()
         mbkLog("PopoverController", "onWillShow fired")
 
-        // Pre-show fittingSize write — seeds contentSize before show() so AppKit
-        // places the window at the correct size from the first frame.
-        // GUARDED: skip if menubar is hidden — writing contentSize against an
-        // off-screen button causes the side-jump on open (#2237).
         let fitting = hostingController.view.fittingSize
         if fitting.width > 0, fitting.height > 0 {
             if shouldSkipReposition {
@@ -290,50 +283,68 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
             return
         }
 
-        // Always write contentSize so the popover tracks SwiftUI content size.
-        popover.contentSize = clamped
-
         // shouldSkipReposition covers:
         //   • menubar hidden (buttonY > screenH) — button is off-screen, buttonMidX garbage
         //   • nil screen — transient during nav; in menubar-hidden mode this is permanent
-        // In both cases setFrameOrigin would fire the arrow to the top-right corner.
+        // In both cases repositioning would fire the arrow to the top-right corner.
+        // We still write contentSize so NSPopover's internal state stays consistent.
         if shouldSkipReposition {
+            popover.contentSize = clamped
             mbkLog("PopoverController",
                    "applyContentSize -- skip reposition, WRITE only (\(clamped.width),\(clamped.height))")
             return
         }
 
-        // Compute buttonMidX LIVE on every call.
+        // Atomic resize + reposition in one setFrame call.
         //
-        // WHY NOT anchor.x:
-        //   anchor.x = window.frame.midX captured ONCE at show-time (popoverWillShow).
-        //   In the MBK example app the button window never moves so it stays valid.
-        //   In host apps (e.g. RunBot), AppKit repositions the popover window on
-        //   every content-width change — shifting button.window?.frame.minX.
-        //   The stale anchor.x is then wrong: every width change moves newOrigin.x
-        //   further off-centre and the arrow side-jumps (run-bot #2268).
+        // WHY NOT (popover.contentSize = clamped) + window.setFrameOrigin:
+        //   Writing contentSize causes AppKit to resize the window in-place from its
+        //   current origin (growing right/down). setFrameOrigin then moves it. These
+        //   are two separate AppKit operations — two visible frames — producing a
+        //   side-jump even with popover.animates = false (run-bot #2268).
         //
-        // WHY anchor.y IS STILL CORRECT:
-        //   window.frame.maxY never changes during a session — height changes grow
-        //   the window downward only. anchor.y is stable for the full session.
+        // FIX: compute the full target NSRect and commit it with window.setFrame
+        //   once. contentSize is written afterwards for NSPopover bookkeeping only
+        //   (at that point the window is already the right size so it's a no-op
+        //   from AppKit's geometry perspective).
         //
-        // buttonMidX = button window screen-left + button local midX.
-        // Always reflects the button's current screen-space centre regardless of
-        // how many width changes have shifted the popover window.
+        // Chrome delta: the popover window is slightly larger than contentSize due
+        //   to the arrow and border. We derive the delta from the current window/
+        //   contentSize relationship captured at show-time and reuse it.
+        //
+        // buttonMidX LIVE: see long comment in previous iteration — we re-derive
+        //   from buttonWin.frame.minX + button.frame.midX on every call so that
+        //   AppKit repositions of the popover window (on width changes) don't
+        //   accumulate into a stale anchor (run-bot #2268).
         guard let button = statusItem.button,
               let buttonWin = button.window else {
+            popover.contentSize = clamped
             mbkLog("PopoverController",
                    "applyContentSize -- no button/buttonWin, WRITE only (\(clamped.width),\(clamped.height))")
             return
         }
+
+        // Chrome delta: difference between window size and content size at show-time.
+        // Stable for the lifetime of the popover window.
+        let chromeW = window.frame.width - popover.contentSize.width
+        let chromeH = window.frame.height - popover.contentSize.height
+
+        let targetW = clamped.width + chromeW
+        let targetH = clamped.height + chromeH
         let buttonMidX = buttonWin.frame.minX + button.frame.midX
-        let newOrigin = NSPoint(
-            x: buttonMidX - window.frame.width / 2,
-            y: anchor.y - window.frame.height
+        let targetOrigin = NSPoint(
+            x: buttonMidX - targetW / 2,
+            y: anchor.y - targetH
         )
-        window.setFrameOrigin(newOrigin)
+        let targetFrame = NSRect(origin: targetOrigin, size: NSSize(width: targetW, height: targetH))
+
+        // Set window frame atomically — one AppKit operation, no intermediate frame.
+        window.setFrame(targetFrame, display: true)
+        // Write contentSize after geometry is committed; NSPopover bookkeeping only.
+        popover.contentSize = clamped
+
         mbkLog("PopoverController",
-               "applyContentSize -- WRITE+REPOSITION (\(clamped.width),\(clamped.height)) buttonMidX=\(buttonMidX) w=\(window.frame.width) origin=\(newOrigin)")
+               "applyContentSize -- ATOMIC SETFRAME (\(clamped.width),\(clamped.height)) buttonMidX=\(buttonMidX) targetFrame=\(targetFrame)")
     }
 
     // MARK: - Workspace observer
@@ -422,7 +433,7 @@ extension MBKPopoverController: NSPopoverDelegate {
             mbkLog("PopoverController", "popoverWillShow -- no hostingWindow (anchor skipped)")
             return
         }
-        // anchor.y = window.frame.maxY — the stable top-edge for all setFrameOrigin
+        // anchor.y = window.frame.maxY — the stable top-edge for all setFrame
         // calls in applyContentSize. Height changes grow downward only, so this
         // never changes for the duration of a session.
         //
