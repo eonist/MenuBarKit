@@ -28,9 +28,12 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
     nonisolated(unsafe) private var eventMonitor: Any?
     // Safe: registered and removed exclusively on the main thread via NSWorkspace.notificationCenter.
     nonisolated(unsafe) private var workspaceObserver: NSObjectProtocol?
-    // Captured once in popoverWillShow. Used as the fixed session anchor for all
-    // setFrameOrigin calls in applyContentSize. nil until first show.
-    private var anchorPoint: NSPoint?
+    // anchorY: window.frame.maxY captured once in popoverWillShow.
+    // Used as the fixed Y reference for setFrameOrigin on width changes.
+    // Y is stable — AppKit pins the popover's bottom to the button on height changes,
+    // so Y never drifts regardless of how many times height changes.
+    // nil until first show.
+    private var anchorY: CGFloat?
     private var onWillCloseFired = false
 
     public init<Content: View>(
@@ -75,8 +78,6 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
     // MARK: - Status item image
 
     /// Updates the status-bar button image.
-    /// The caller is responsible for supplying an appropriately sized, template-mode
-    /// `NSImage`. `MBKPopoverController` does not resize or retemplate the image.
     public func setStatusItemImage(_ image: NSImage) {
         statusItem?.button?.image = image
     }
@@ -98,7 +99,6 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
     /// first open, causing the pre-show contentSize write to be skipped.
     ///
     /// screenH < 0 signals a nil screen — skip in both cases.
-    /// Fix ported from commit 541c20fe (MBK example app, run-bot#2237/#2239).
     private var isMenuBarHidden: Bool {
         guard let button = statusItem.button else { return false }
         let buttonScreen = button.window?.screen
@@ -107,6 +107,19 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         let hidden = screenH < 0 || buttonY > screenH
         mbkLog("PopoverController", "isMenuBarHidden=\(hidden) buttonY=\(buttonY) screenH=\(screenH)")
         return hidden
+    }
+
+    /// The status bar button's horizontal midpoint in screen coordinates.
+    /// This is the true, always-current center for the NSPopover arrow.
+    /// Re-derived on every width-change reposition rather than relying on
+    /// a stale one-time capture — the button never moves while the popover
+    /// is open, so this value is stable within a session.
+    private var buttonMidX: CGFloat? {
+        guard let button = statusItem.button,
+              let buttonWindow = button.window else { return nil }
+        // Convert button bounds midX to screen coordinates.
+        let buttonMid = button.convert(NSPoint(x: button.bounds.midX, y: 0), to: nil)
+        return buttonWindow.convertPoint(toScreen: buttonMid).x
     }
 
     // MARK: - Private setup helpers
@@ -257,25 +270,49 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
            || abs(popover.contentSize.height - clamped.height) > 1 else { return }
         guard popover.isShown,
               let window = hostingController.view.window,
-              let anchor = anchorPoint else {
+              let anchorY = anchorY else {
             // Not shown — bare write, no window to reposition.
             popover.contentSize = clamped
             mbkLog("PopoverController",
                    "applyContentSize -- not shown, WRITE (\(clamped.width),\(clamped.height))")
             return
         }
-        // Popover is shown — write contentSize then re-center using the fixed session anchor.
-        // anchor.x = window.frame.midX captured at show-time (popoverWillShow).
-        // window.frame.width is read AFTER the contentSize write so AppKit has
-        // already committed the new frame width synchronously.
+
+        // Capture old width BEFORE the contentSize write.
+        let oldWidth = popover.contentSize.width
         popover.contentSize = clamped
-        let newOrigin = NSPoint(
-            x: anchor.x - window.frame.width / 2,
-            y: anchor.y - window.frame.height
-        )
-        window.setFrameOrigin(newOrigin)
-        mbkLog("PopoverController",
-               "applyContentSize -- WRITE (\(clamped.width),\(clamped.height)) anchor=\(anchor) w=\(window.frame.width) origin=\(newOrigin)")
+
+        // Only reposition on width changes.
+        //
+        // WHY skip height-only:
+        // AppKit automatically adjusts the window's Y to keep the popover
+        // pinned to the button bottom on height changes. Calling setFrameOrigin
+        // on height-only changes accumulates floating-point rounding on every
+        // row-expand event and drifts the window horizontally over time.
+        //
+        // WHY re-derive anchor.x from the button each time:
+        // anchorPoint was previously captured once as window.frame.midX at
+        // popoverWillShow. After the first setFrameOrigin call the window moved,
+        // making the stale anchor wrong for all subsequent width-change repositions.
+        // The status bar button never moves while the popover is open — its screen
+        // midX is always the true horizontal center for the NSPopover arrow.
+        if abs(clamped.width - oldWidth) > 1 {
+            guard let liveAnchorX = buttonMidX else {
+                mbkLog("PopoverController",
+                       "applyContentSize -- WRITE only, width change but buttonMidX unavailable (\(clamped.width),\(clamped.height))")
+                return
+            }
+            let newOrigin = NSPoint(
+                x: liveAnchorX - window.frame.width / 2,
+                y: anchorY - window.frame.height
+            )
+            window.setFrameOrigin(newOrigin)
+            mbkLog("PopoverController",
+                   "applyContentSize -- WRITE+REPOSITION (\(clamped.width),\(clamped.height)) liveAnchorX=\(liveAnchorX) w=\(window.frame.width) origin=\(newOrigin)")
+        } else {
+            mbkLog("PopoverController",
+                   "applyContentSize -- WRITE only, height-only change (\(clamped.width),\(clamped.height)) — skipping setFrameOrigin")
+        }
     }
 
     private func setupWorkspaceObserver() {
@@ -355,17 +392,19 @@ extension MBKPopoverController: NSPopoverDelegate {
     public func popoverWillShow(_ notification: Notification) {
         setButtonHighlight(true)
         guard let window = hostingController.view.window else {
-            mbkLog("PopoverController", "popoverWillShow -- no hostingWindow (anchor skipped)")
+            mbkLog("PopoverController", "popoverWillShow -- no hostingWindow (anchorY skipped)")
             return
         }
-        // anchor = window.frame.midX / maxY at show-time.
-        // Used as the fixed session reference for all setFrameOrigin calls.
-        // window.frame.midX here is the popover window's midpoint as placed by
-        // AppKit's show(relativeTo:of:preferredEdge:) — reliable enough as a
-        // one-time capture since we always re-center from it on every resize.
-        anchorPoint = NSPoint(x: window.frame.midX, y: window.frame.maxY)
+        // anchorY: window top edge at show-time. Used as the fixed Y reference
+        // for setFrameOrigin on width changes. Y is stable because AppKit
+        // automatically keeps the popover pinned to the button on height changes.
+        //
+        // anchorX is NOT stored here. Instead, buttonMidX is re-derived live
+        // from the status bar button on every width-change reposition, so it is
+        // never stale regardless of how many setFrameOrigin calls have occurred.
+        anchorY = window.frame.maxY
         mbkLog("PopoverController",
-               "popoverWillShow -- anchor=\(anchorPoint!) win=\(window.frame) #\(window.windowNumber)")
+               "popoverWillShow -- anchorY=\(anchorY!) win=\(window.frame) #\(window.windowNumber)")
     }
 
     public func popoverShouldClose(_ popover: NSPopover) -> Bool {
@@ -378,7 +417,7 @@ extension MBKPopoverController: NSPopoverDelegate {
         fireOnWillClose(wasForced: false)
         setButtonHighlight(false)
         stopEventMonitor()
-        anchorPoint = nil
+        anchorY = nil
         overlayGate.hasActiveOverlay = false
         overlayGate.hasFilePickerOverlay = false
         onWillCloseFired = false
