@@ -158,14 +158,35 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         onWillShow?()
         mbkLog("PopoverController", "onWillShow fired")
 
-        let fitting = hostingController.view.fittingSize
-        if fitting.width > 0, fitting.height > 0 {
-            if shouldSkipReposition {
-                mbkLog("PopoverController", "openPopover -- skip guard active, SKIP pre-show contentSize write (\(fitting.width),\(fitting.height))")
-            } else {
+        // Force a synchronous layout pass so fittingSize reflects the
+        // fully-settled content width BEFORE show().
+        //
+        // WHY THIS MATTERS:
+        //   Without this, onAppear fires during show() while anchorPoint is
+        //   still nil. applyContentSize takes the "not shown" branch and writes
+        //   whatever stale contentSize the hosting controller last had (e.g.
+        //   548). AppKit places the window at that stale width. SwiftUI then
+        //   settles to the true width (e.g. 636.5) and fires onChange —
+        //   anchorPoint is now set, so applyContentSize repositions the window
+        //   → visible side-jump on every open (run-bot #2268).
+        //
+        //   With layoutSubtreeIfNeeded(), fittingSize == settled width. We
+        //   write it to contentSize before show(). AppKit places the window at
+        //   the correct width from frame 0. The onChange delta is 0 — bails
+        //   at the >1 guard. No jump.
+        //
+        // SAFE: synchronous and idempotent. The hosting controller view is
+        //   already in the off-screen window hierarchy (set up in setupPopover).
+        if !shouldSkipReposition {
+            hostingController.view.layoutSubtreeIfNeeded()
+            let fitting = hostingController.view.fittingSize
+            if fitting.width > 0, fitting.height > 0 {
                 popover.contentSize = clamp(fitting)
-                mbkLog("PopoverController", "openPopover -- pre-show contentSize written (\(clamp(fitting).width),\(clamp(fitting).height))")
+                mbkLog("PopoverController",
+                       "openPopover -- pre-show layoutSubtreeIfNeeded contentSize=(\(clamp(fitting).width),\(clamp(fitting).height))")
             }
+        } else {
+            mbkLog("PopoverController", "openPopover -- skip guard active, SKIP pre-show contentSize write")
         }
 
         guard let rect = positioningRect(for: button) else { return }
@@ -284,10 +305,9 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         }
 
         // shouldSkipReposition covers:
-        //   • menubar hidden (buttonY > screenH) — button is off-screen, buttonMidX garbage
-        //   • nil screen — transient during nav; in menubar-hidden mode this is permanent
-        // In both cases repositioning would fire the arrow to the top-right corner.
-        // We still write contentSize so NSPopover's internal state stays consistent.
+        //   • menubar hidden (buttonY > screenH) — button off-screen, buttonMidX garbage
+        //   • nil screen — transient during nav; permanent in menubar-hidden mode
+        // Write contentSize so NSPopover stays consistent; skip window geometry.
         if shouldSkipReposition {
             popover.contentSize = clamped
             mbkLog("PopoverController",
@@ -298,24 +318,11 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         // Atomic resize + reposition in one setFrame call.
         //
         // WHY NOT (popover.contentSize = clamped) + window.setFrameOrigin:
-        //   Writing contentSize causes AppKit to resize the window in-place from its
-        //   current origin (growing right/down). setFrameOrigin then moves it. These
-        //   are two separate AppKit operations — two visible frames — producing a
-        //   side-jump even with popover.animates = false (run-bot #2268).
+        //   Two separate AppKit operations — two visible frames — side-jump
+        //   even with popover.animates = false (run-bot #2268).
         //
-        // FIX: compute the full target NSRect and commit it with window.setFrame
-        //   once. contentSize is written afterwards for NSPopover bookkeeping only
-        //   (at that point the window is already the right size so it's a no-op
-        //   from AppKit's geometry perspective).
-        //
-        // Chrome delta: the popover window is slightly larger than contentSize due
-        //   to the arrow and border. We derive the delta from the current window/
-        //   contentSize relationship captured at show-time and reuse it.
-        //
-        // buttonMidX LIVE: see long comment in previous iteration — we re-derive
-        //   from buttonWin.frame.minX + button.frame.midX on every call so that
-        //   AppKit repositions of the popover window (on width changes) don't
-        //   accumulate into a stale anchor (run-bot #2268).
+        // Chrome delta: popover window is larger than contentSize by a fixed
+        //   amount (arrow + border). Derived from current window/contentSize.
         guard let button = statusItem.button,
               let buttonWin = button.window else {
             popover.contentSize = clamped
@@ -324,11 +331,8 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
             return
         }
 
-        // Chrome delta: difference between window size and content size at show-time.
-        // Stable for the lifetime of the popover window.
         let chromeW = window.frame.width - popover.contentSize.width
         let chromeH = window.frame.height - popover.contentSize.height
-
         let targetW = clamped.width + chromeW
         let targetH = clamped.height + chromeH
         let buttonMidX = buttonWin.frame.minX + button.frame.midX
@@ -338,9 +342,7 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         )
         let targetFrame = NSRect(origin: targetOrigin, size: NSSize(width: targetW, height: targetH))
 
-        // Set window frame atomically — one AppKit operation, no intermediate frame.
         window.setFrame(targetFrame, display: true)
-        // Write contentSize after geometry is committed; NSPopover bookkeeping only.
         popover.contentSize = clamped
 
         mbkLog("PopoverController",
@@ -433,13 +435,9 @@ extension MBKPopoverController: NSPopoverDelegate {
             mbkLog("PopoverController", "popoverWillShow -- no hostingWindow (anchor skipped)")
             return
         }
-        // anchor.y = window.frame.maxY — the stable top-edge for all setFrame
-        // calls in applyContentSize. Height changes grow downward only, so this
-        // never changes for the duration of a session.
-        //
-        // anchor.x is captured here for diagnostics only. applyContentSize
-        // re-derives buttonMidX live from the button's current screen position
-        // on every call (run-bot #2268).
+        // anchor.y = window.frame.maxY — stable top-edge for all setFrame calls.
+        // anchor.x captured for diagnostics only; applyContentSize derives
+        // buttonMidX live on every call (run-bot #2268).
         anchorPoint = NSPoint(x: window.frame.midX, y: window.frame.maxY)
         mbkLog("PopoverController",
                "popoverWillShow -- anchor=\(anchorPoint!) win=\(window.frame) #\(window.windowNumber)")
