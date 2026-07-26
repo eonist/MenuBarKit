@@ -110,16 +110,18 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
     }
 
     /// The status bar button's horizontal midpoint in screen coordinates.
-    /// This is the true, always-current center for the NSPopover arrow.
-    /// Re-derived on every width-change reposition rather than relying on
-    /// a stale one-time capture — the button never moves while the popover
-    /// is open, so this value is stable within a session.
+    /// This is the true anchor for the NSPopover arrow — re-derived live on
+    /// every width-change reposition so it is never stale.
+    ///
+    /// WHY button.window?.frame.midX and not a coordinate conversion:
+    /// NSStatusBarWindow.frame is already in screen coordinates. The status bar
+    /// window is exactly as wide as its button, so frame.midX IS the button's
+    /// screen midX. No conversion needed — and conversions via
+    /// button.convert(_:to:) + convertPoint(toScreen:) were observed to return
+    /// the popover window's midX instead (wrong), because the conversion
+    /// resolves relative to the hosting view's window, not the status bar window.
     private var buttonMidX: CGFloat? {
-        guard let button = statusItem.button,
-              let buttonWindow = button.window else { return nil }
-        // Convert button bounds midX to screen coordinates.
-        let buttonMid = button.convert(NSPoint(x: button.bounds.midX, y: 0), to: nil)
-        return buttonWindow.convertPoint(toScreen: buttonMid).x
+        statusItem.button?.window?.frame.midX
     }
 
     // MARK: - Private setup helpers
@@ -291,11 +293,8 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         // row-expand event and drifts the window horizontally over time.
         //
         // WHY re-derive anchor.x from the button each time:
-        // anchorPoint was previously captured once as window.frame.midX at
-        // popoverWillShow. After the first setFrameOrigin call the window moved,
-        // making the stale anchor wrong for all subsequent width-change repositions.
-        // The status bar button never moves while the popover is open — its screen
-        // midX is always the true horizontal center for the NSPopover arrow.
+        // The status bar button never moves while the popover is open — its
+        // window frame.midX is always the true horizontal center for the arrow.
         if abs(clamped.width - oldWidth) > 1 {
             guard let liveAnchorX = buttonMidX else {
                 mbkLog("PopoverController",
@@ -400,8 +399,8 @@ extension MBKPopoverController: NSPopoverDelegate {
         // automatically keeps the popover pinned to the button on height changes.
         //
         // anchorX is NOT stored here. Instead, buttonMidX is re-derived live
-        // from the status bar button on every width-change reposition, so it is
-        // never stale regardless of how many setFrameOrigin calls have occurred.
+        // from statusItem.button?.window?.frame.midX on every width-change
+        // reposition — never stale, never requires conversion.
         anchorY = window.frame.maxY
         mbkLog("PopoverController",
                "popoverWillShow -- anchorY=\(anchorY!) win=\(window.frame) #\(window.windowNumber)")
