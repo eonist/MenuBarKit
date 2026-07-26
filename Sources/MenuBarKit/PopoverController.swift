@@ -30,8 +30,8 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
     // Y is stable — AppKit pins the popover bottom to the button on height changes.
     // nil until first show.
     private var anchorY: CGFloat?
-    // lastKnownAnchorX: buttonMidX captured the last time the popover was opened
-    // while the menubar was visible. Used to reposition after show() when hidden.
+    // lastKnownAnchorX: buttonMidX from the last visible-mode open.
+    // Used for the post-show correction when opening while menubar is hidden.
     // nil until first visible-mode open.
     private var lastKnownAnchorX: CGFloat?
     private var onWillCloseFired = false
@@ -271,16 +271,13 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         guard abs(popover.contentSize.width - clamped.width) > 1
            || abs(popover.contentSize.height - clamped.height) > 1 else { return }
         guard popover.isShown,
-              let window = hostingController.view.window,
-              let anchorY = anchorY else {
+              let _ = hostingController.view.window,
+              let _ = anchorY else {
             // Not shown path.
             //
-            // GUARDED: skip when menubar is hidden. SwiftUI fires size changes
-            // after the popover closes (nav reset, view teardown). Writing
-            // contentSize while the button is off-screen poisons the value
-            // that AppKit uses to place the window on the next open — causing
-            // the side-jump. The contentSize written during the last visible-mode
-            // open is already correct; leave it alone.
+            // GUARDED: skip when menubar is hidden. Post-close SwiftUI size
+            // callbacks while hidden poison contentSize — AppKit uses the
+            // stale value to anchor the next open against the off-screen button.
             if isMenuBarHidden {
                 mbkLog("PopoverController",
                        "applyContentSize -- not shown, menubar hidden, SKIP WRITE (\(clamped.width),\(clamped.height))")
@@ -297,27 +294,34 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
 
         if abs(clamped.width - oldWidth) > 1 {
             if isMenuBarHidden {
-                // Button off-screen — midX is garbage. Leave origin alone.
+                // Button off-screen — skip reposition entirely.
                 mbkLog("PopoverController",
-                       "applyContentSize -- menubar hidden, WRITE only (\(clamped.width),\(clamped.height)) — skipping setFrameOrigin")
+                       "applyContentSize -- menubar hidden, WRITE only (\(clamped.width),\(clamped.height)) — skipping re-anchor")
             } else {
-                guard let liveAnchorX = buttonMidX else {
+                // Re-anchor by calling show() again.
+                //
+                // WHY show() instead of setFrameOrigin:
+                // setFrameOrigin moves the NSPopover window without updating
+                // AppKit's internal arrow anchor. The arrow tip stays pinned to
+                // the original positioning rect, so when the window shifts to
+                // re-center after a width change the arrow appears off-center.
+                // Calling show() again with a fresh positioningRect forces
+                // AppKit to re-derive both the window origin AND the arrow
+                // position atomically from the current button location.
+                guard let button = statusItem.button,
+                      let rect = positioningRect(for: button) else {
                     mbkLog("PopoverController",
-                           "applyContentSize -- WRITE only, buttonMidX unavailable (\(clamped.width),\(clamped.height))")
+                           "applyContentSize -- WRITE only, button unavailable for re-anchor (\(clamped.width),\(clamped.height))")
                     return
                 }
-                lastKnownAnchorX = liveAnchorX
-                let newOrigin = NSPoint(
-                    x: liveAnchorX - window.frame.width / 2,
-                    y: anchorY - window.frame.height
-                )
-                window.setFrameOrigin(newOrigin)
+                if let anchorX = buttonMidX { lastKnownAnchorX = anchorX }
+                popover.show(relativeTo: rect, of: button, preferredEdge: .minY)
                 mbkLog("PopoverController",
-                       "applyContentSize -- WRITE+REPOSITION (\(clamped.width),\(clamped.height)) liveAnchorX=\(liveAnchorX) w=\(window.frame.width) origin=\(newOrigin)")
+                       "applyContentSize -- WRITE+REANCHOR via show() (\(clamped.width),\(clamped.height))")
             }
         } else {
             mbkLog("PopoverController",
-                   "applyContentSize -- WRITE only, height-only change (\(clamped.width),\(clamped.height)) — skipping setFrameOrigin")
+                   "applyContentSize -- WRITE only, height-only change (\(clamped.width),\(clamped.height)) — skipping re-anchor")
         }
     }
 
