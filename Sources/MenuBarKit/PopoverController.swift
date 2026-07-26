@@ -91,31 +91,46 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         statusItem?.button?.image = image
     }
 
-    // MARK: - Auto-hide menubar guard
+    // MARK: - shouldSkipReposition
 
-    /// Returns true when the macOS auto-hide menubar is currently hidden (slid off-screen).
+    /// Returns true when setFrameOrigin must be skipped.
     ///
-    /// When hidden, the status item button window slides above the top edge of the screen.
-    /// Calling setFrameOrigin against an off-screen button collapses x to 0 —
-    /// jumping the whole window to the left edge.
+    /// Two cases where repositioning is unsafe:
     ///
-    /// WHY > and not >=:
-    ///   buttonY == screenH is the normal resting position (flush with screen top).
-    ///   Only buttonY > screenH means the menubar has actually slid off-screen.
+    /// 1. MENUBAR HIDDEN (buttonY > screenH):
+    ///    The status item button window has slid above the screen top edge.
+    ///    buttonMidX = buttonWin.frame.minX + button.frame.midX resolves to
+    ///    an off-screen X coordinate. setFrameOrigin with that value moves
+    ///    the popover window to the top-right corner (run-bot #2268).
     ///
-    /// A nil screen (button.window?.screen == nil) occurs transiently during route
-    /// transitions. Treating nil as hidden produces false positives that skip
-    /// setFrameOrigin during normal navigation. Return false for nil screen.
-    private var isMenuBarHidden: Bool {
-        guard let button = statusItem.button,
-              let screen = button.window?.screen else {
-            mbkLog("PopoverController", "isMenuBarHidden=false (nil screen — transient)")
-            return false
+    /// 2. NIL SCREEN:
+    ///    button.window?.screen is nil during SwiftUI route transitions (the
+    ///    view tree tears down and remounts). In menubar-visible mode this is
+    ///    only a brief transient and screen is never nil in practice. In
+    ///    menubar-HIDDEN mode screen is nil on EVERY nav transition because the
+    ///    button window is off-screen and has no associated screen object.
+    ///    Proceeding with setFrameOrigin when screen==nil fires the arrow to
+    ///    the top-right corner. Skip reposition; contentSize write still occurs.
+    ///
+    /// WHY > and not >= for buttonY:
+    ///    buttonY == screenH is the normal resting position (flush with screen top).
+    ///    Only buttonY > screenH means the menubar has actually slid off-screen.
+    private var shouldSkipReposition: Bool {
+        guard let button = statusItem.button else {
+            mbkLog("PopoverController", "shouldSkipReposition=true (no button)")
+            return true
+        }
+        guard let screen = button.window?.screen else {
+            // nil screen — either transient during nav (menubar visible) or
+            // permanent while menubar is hidden. Either way, buttonMidX is
+            // unreliable. Skip setFrameOrigin.
+            mbkLog("PopoverController", "shouldSkipReposition=true (nil screen)")
+            return true
         }
         let screenH = screen.frame.height
         let buttonY = button.window?.frame.maxY ?? -1
         let hidden = buttonY > screenH
-        mbkLog("PopoverController", "isMenuBarHidden=\(hidden) buttonY=\(buttonY) screenH=\(screenH)")
+        mbkLog("PopoverController", "shouldSkipReposition=\(hidden) buttonY=\(buttonY) screenH=\(screenH)")
         return hidden
     }
 
@@ -146,10 +161,14 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         onWillShow?()
         mbkLog("PopoverController", "onWillShow fired")
 
+        // Pre-show fittingSize write — seeds contentSize before show() so AppKit
+        // places the window at the correct size from the first frame.
+        // GUARDED: skip if menubar is hidden — writing contentSize against an
+        // off-screen button causes the side-jump on open (#2237).
         let fitting = hostingController.view.fittingSize
         if fitting.width > 0, fitting.height > 0 {
-            if isMenuBarHidden {
-                mbkLog("PopoverController", "openPopover -- menubar hidden, SKIP pre-show contentSize write (\(fitting.width),\(fitting.height))")
+            if shouldSkipReposition {
+                mbkLog("PopoverController", "openPopover -- skip guard active, SKIP pre-show contentSize write (\(fitting.width),\(fitting.height))")
             } else {
                 popover.contentSize = clamp(fitting)
                 mbkLog("PopoverController", "openPopover -- pre-show contentSize written (\(clamp(fitting).width),\(clamp(fitting).height))")
@@ -264,17 +283,23 @@ public final class MBKPopoverController: NSObject, MBKPopoverControllerProtocol 
         guard popover.isShown,
               let window = hostingController.view.window,
               let anchor = anchorPoint else {
+            // Not shown — bare write, no window to reposition.
             popover.contentSize = clamped
             mbkLog("PopoverController",
                    "applyContentSize -- not shown, WRITE (\(clamped.width),\(clamped.height))")
             return
         }
 
+        // Always write contentSize so the popover tracks SwiftUI content size.
         popover.contentSize = clamped
 
-        if isMenuBarHidden {
+        // shouldSkipReposition covers:
+        //   • menubar hidden (buttonY > screenH) — button is off-screen, buttonMidX garbage
+        //   • nil screen — transient during nav; in menubar-hidden mode this is permanent
+        // In both cases setFrameOrigin would fire the arrow to the top-right corner.
+        if shouldSkipReposition {
             mbkLog("PopoverController",
-                   "applyContentSize -- menubar hidden, WRITE (\(clamped.width),\(clamped.height)) SKIP setFrameOrigin")
+                   "applyContentSize -- skip reposition, WRITE only (\(clamped.width),\(clamped.height))")
             return
         }
 
