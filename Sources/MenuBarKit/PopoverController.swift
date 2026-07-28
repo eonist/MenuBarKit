@@ -314,6 +314,13 @@ public final class MBKPopoverController: NSObject {
         glassView.cornerRadius = cornerRadius
         glassView.style = .regular
         glassView.autoresizingMask = [.width, .height]
+        // Private KVC — tune glass intensity.
+        // _subduedState=0 : full intensity (default 1 = washed-out/light)
+        // _variant=5      : richer, darker glass (BetterDisplay/waydabber recipe)
+        // _scrimState=0   : no dim overlay
+        glassView.setValue(0, forKey: "_subduedState")
+        glassView.setValue(5, forKey: "_variant")
+        glassView.setValue(0, forKey: "_scrimState")
 
         // 2. Hosting view — transparent so glass shows through.
         hostingController.view.wantsLayer = true
