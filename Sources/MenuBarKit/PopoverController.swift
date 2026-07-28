@@ -314,6 +314,7 @@ public final class MBKPopoverController: NSObject {
         glassView.cornerRadius = cornerRadius
         glassView.style = .regular
         glassView.autoresizingMask = [.width, .height]
+        glassView.setValue(0, forKey: "_subduedState")
 
         // 2. Hosting view — transparent so glass shows through.
         hostingController.view.wantsLayer = true
@@ -353,7 +354,11 @@ public final class MBKPopoverController: NSObject {
         frameView.layer?.backgroundColor = NSColor.clear.cgColor
         frameView.layer?.cornerRadius = cornerRadius
         frameView.layer?.cornerCurve = .continuous
-        frameView.layer?.masksToBounds = true
+        // DO NOT set masksToBounds = true — NSThemeFrame is an ancestor of
+        // NSGlassEffectView. masksToBounds forces the entire window into an
+        // offscreen compositing pass, severing the live backdrop connection.
+        // The glass falls back to flat/washed-out. cornerRadius alone is
+        // sufficient to suppress the faint square border pixel artefacts.
     }
 
     private func roundedMaskImage(radius: CGFloat) -> NSImage {
