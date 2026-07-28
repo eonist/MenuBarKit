@@ -114,6 +114,22 @@ public final class MBKPopoverController: NSObject {
 
     private let cornerRadius: CGFloat = 20
 
+    // NSGlassEffectView private KVC keys — all three set to 1 to produce dark glass.
+    //
+    // Each key controls a distinct stage of the same compositor pipeline:
+    //   _subduedState = 1  Activates a mode that ignores desktop-content colour and
+    //                      renders the glass at its own dark intrinsic tone. Despite
+    //                      the name, "subdued" means muted toward desktop content —
+    //                      so = 1 *disables* that sampling and locks in the dark tone.
+    //   _variant      = 1  Selects the dark-glass rendering variant of the compositor.
+    //   _scrimState   = 1  Enables the scrim layer that reinforces the dark tone.
+    //
+    // All three must be set together. Each alone leaves the other two at their
+    // defaults, which pull in opposite directions — the net result is light glass.
+    // All three at 1 aligns the entire pipeline so they reinforce each other.
+    //
+    // These KVC values only affect tint/intensity, not the compositing path, so
+    // they do not interact with the masksToBounds / offscreen-pass issue.
     private enum GlassConfig {
         static let variant: Int = 1
         static let subduedState: Int = 1
