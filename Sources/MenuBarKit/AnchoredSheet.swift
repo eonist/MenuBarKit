@@ -204,6 +204,10 @@ public struct MBKAnchoredSheetModifier<SheetContent: View>: ViewModifier {
     /// Finds the sheet NSWindow and wires it as a child of the popover window.
     @MainActor
     private func anchorSheetWindow() {
+        // Single-instance assumption: picks the first .nonactivatingPanel window.
+        // If the host app creates two MBKPopoverController instances (two status
+        // items), this may resolve the wrong popover window. See FilePicker.swift
+        // for the same note. Fine for the current single-popover use case.
         guard let popoverWindow = NSApp.windows.first(where: {
             $0.styleMask.contains(.nonactivatingPanel)
         }) else {
@@ -282,6 +286,7 @@ public struct MBKAnchoredSheetItemModifier<Item: Identifiable & Equatable, Sheet
     /// Finds the sheet NSWindow and wires it as a child of the popover window.
     @MainActor
     private func anchorSheetWindow() {
+        // Single-instance assumption: same as isPresented variant above.
         guard let popoverWindow = NSApp.windows.first(where: {
             $0.styleMask.contains(.nonactivatingPanel)
         }) else {

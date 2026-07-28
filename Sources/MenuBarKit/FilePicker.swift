@@ -17,9 +17,11 @@
 //   entire panel lifetime with no race.
 //
 //   If beginSheetModal itself fails silently (rare edge case), the gate stays
-//   true for the session. This is safe: MBKPopoverController.popoverDidClose
-//   resets the gate unconditionally as a safety net, so the worst outcome is
-//   that dismiss is blocked until the user closes and reopens the popover.
+//   true for the session. NOTE: MBKPopoverController does NOT implement a
+//   popoverDidClose safety-net reset — the comment below was aspirational and
+//   was never built. If the gate gets stuck, the panel becomes non-dismissable
+//   for that session until the user quits the app. This is a known spike
+//   limitation. The worst outcome is that dismiss is blocked until relaunch.
 //
 // WINDOW RESOLUTION:
 //   - .popover context: the nonactivatingPanel window (the popover's own window).

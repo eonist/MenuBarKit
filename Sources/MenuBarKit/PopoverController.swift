@@ -240,7 +240,11 @@ public final class MBKPopoverController: NSObject {
         panel.orderOut(nil)
         setButtonHighlight(false)
         stopEventMonitor()
-        overlayGate.hasActiveOverlay = false
+        // No gate reset needed here — the guard above only passes when
+        // hasActiveOverlay is already false. FilePicker and AnchoredSheet
+        // are responsible for clearing the gate in their own completion paths.
+        // If either fails to clear it, the gate stays stuck for the session
+        // (known spike limitation — see FilePicker.swift header).
         mbkLog("PopoverController", "closePanel — closed")
     }
 
