@@ -312,10 +312,8 @@ public final class MBKPopoverController: NSObject {
         glassView.setValue(GlassConfig.scrimState, forKey: "_scrimState")
 
         // Hosting view — transparent so glass shows through.
-        //    wantsLayer = true forces immediate layer creation — layer is non-nil right after.
-        //    layer?.backgroundColor must follow wantsLayer = true, but can precede or follow
-        //    the contentView assignment below. The contentView assignment is irrelevant to
-        //    layer creation; only wantsLayer = true matters for layer to be non-nil.
+        //    wantsLayer = true forces immediate layer creation before the view is
+        //    attached to any superview — so backgroundColor can be zeroed right here.
         hostingController.view.wantsLayer = true
         hostingController.view.layer?.backgroundColor = CGColor.clear
         hostingController.view.frame = glassView.bounds
@@ -355,7 +353,7 @@ public final class MBKPopoverController: NSObject {
     private func clamp(_ size: CGSize) -> CGSize {
         CGSize(
             width:  min(max(size.width,  minWidth), maxWidth),
-            height: min(max(size.height, 1),        maxHeight)
+            height: min(max(size.height, 1),        maxHeight)  // 1pt floor: no public minHeight param; prevents degenerate zero-height frames
         )
     }
 
@@ -385,7 +383,7 @@ public final class MBKPopoverController: NSObject {
             mbkLog("PopoverController", "applyContentSize — aborted: no screen")
             return
         }
-        // Left-align panel to button's leading edge, clamped within the visible screen frame.
+        // Left-align to button's leading edge (anchorX), clamped within the visible screen frame.
         let clampedX = min(anchorX, screen.visibleFrame.maxX - clamped.width)
         let newOrigin = NSPoint(
             x: round(max(clampedX, screen.visibleFrame.minX)),
