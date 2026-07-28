@@ -10,9 +10,8 @@ struct SettingsView: View {
     @Environment(MBKOverlayGate.self) private var overlayGate
     @State private var showSheet = false
 
-    private var scrollMaxHeight: CGFloat {
-        (NSScreen.main?.visibleFrame.height ?? 800) * 0.80
-    }
+    // Captured once on appear — avoids querying NSScreen.main on every render.
+    @State private var scrollMaxHeight: CGFloat = (NSScreen.main?.visibleFrame.height ?? 800) * 0.80
 
     var body: some View {
         @Bindable var appState = appState
@@ -59,6 +58,8 @@ struct SettingsView: View {
                 Button("Open sheet") { showSheet = true }
                     .mbkSheet(isPresented: $showSheet, overlayGate: overlayGate) {
                         SheetView()
+                            .environment(appState)
+                            .environment(overlayGate)
                     }
 
                 Button("Pick folder (popover)") {
