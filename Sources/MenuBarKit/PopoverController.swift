@@ -9,71 +9,41 @@
 //   NSHostingController.sizingOptions = .preferredContentSize
 //   SwiftUI reports its ideal size via preferredContentSize.
 //   KVO fires applyContentSize on every layout pass that produces a new size.
-//   applyContentSize calls panel.setFrame() — free resize, no re-anchor.
+//   applyContentSize calls panel.setFrame() — free resize, re-anchoring to
+//   the left edge of the status button (anchorX).
 //
 // POSITIONING MODEL:
 //   On open: panel left edge aligns with the left edge of the status button,
 //   clamped so the panel never overflows the screen's visible frame.
-//   On resize: anchorX (button.minX in screen coords) + anchorY are
-//   re-used to recompute origin from the new size.
+//   On resize: the same anchorX (button.minX in screen coords) + anchorY are
+//   re-used so the panel stays left-aligned under the button.
 //
-// ┌──────────────────────────────────────────────────────────────────────────┐
-// │  !! DO NOT TOUCH — ROUNDED CORNER SYSTEM !!                            │
-// │                                                                         │
-// │  Rounded corners survive addChildWindow() ONLY because of the exact     │
-// │  two-layer structure below. Every other approach was tried and failed.   │
-// │  Do NOT change the view hierarchy, maskImage setup, or                  │
-// │  roundedMaskImage() without reading the full history below.             │
-// │                                                                         │
-// │  WHAT BREAKS CORNERS (do not re-introduce these):                       │
-// │    • NSVisualEffectView.cornerRadius / masksToBounds                    │
-// │    • CAShapeLayer mask on any layer                                      │
-// │    • NSGlassEffectView.cornerRadius alone                               │
-// │    • NSGlassEffectView.clipsToBounds                                    │
-// │    • Any async re-assertion of cornerRadius after addChildWindow()       │
-// │    • Removing the outer NSVisualEffectView clipView                      │
-// │    • Making NSGlassEffectView the direct panel.contentView               │
-// │    • Subclassing NSPanel to override addChildWindow/removeChildWindow    │
-// │    • maskImage on NSGlassEffectView — it has NO maskImage property       │
-// │      (NSGlassEffectView does NOT inherit NSVisualEffectView)             │
-// │                                                                         │
-// │  WHAT KEEPS CORNERS ALIVE (do not remove or alter):                     │
-// │    • clipView (NSVisualEffectView) as panel.contentView                  │
-// │    • clipView.maskImage = roundedMaskImage(radius: cornerRadius)         │
-// │    • roundedMaskImage() using NSBezierPath + capInsets + .stretch        │
-// │    • NSGlassEffectView pinned inside clipView via Auto Layout            │
-// └──────────────────────────────────────────────────────────────────────────┘
+// VIEW HIERARCHY:
+//   panel.contentView → NSGlassEffectView  (cornerRadius set here)
+//                           .contentView → hostingController.view
 //
-// VISUAL CHROME — TWO-LAYER APPROACH:
-//   NSPanel(.borderless) has no chrome. We use two nested views:
+//   NSGlassEffectView is the direct panel.contentView. Its cornerRadius clips
+//   the glass natively inside the private glass compositor — no offscreen
+//   compositing pass, survives addChildWindow() without reverting to rect corners.
 //
-//   1. Outer — NSVisualEffectView (clipView)
-//      Set as panel.contentView. Its ONLY job is maskImage corner clipping.
-//      blendingMode = .withinWindow is REQUIRED. With .withinWindow there is
-//      nothing behind the VEV in the window's own layer tree, so it renders
-//      as fully transparent — zero compositor content contributed.
-//      Using .behindWindow causes the VEV to render its own dark vibrancy
-//      layer that the glass then composites on top of, making the panel
-//      look grey/dark instead of live liquid glass.
-//      material is left at its default (.appearanceBased) — it has no effect
-//      when blendingMode = .withinWindow and there is no backing content.
+//   clipWindowFrameBacking() rounds the AppKit frame-backing layer that lives
+//   *outside* contentView, suppressing faint square pixel artefacts at the
+//   window border without touching the glass compositor.
 //
-//   2. Inner — NSGlassEffectView
-//      Pinned to fill clipView. Provides the Tahoe liquid-glass material.
-//      hostingController.view is assigned to its contentView property.
-//      .style = .regular — gives a dark prominent material matching system
-//      menus and status-bar panels (e.g. Weather). The default .automatic
-//      renders as light/clear glass — too bright for a dark menu-bar panel.
-//      Do NOT set wantsLayer or layer.backgroundColor on glassView — it
-//      interferes with the private glass compositor.
+// WHAT BREAKS CORNERS (do not re-introduce):
+//   • masksToBounds = true on any ancestor of NSGlassEffectView
+//     Forces an offscreen compositing pass → glass severs live backdrop.
+//   • NSVisualEffectView wrapper as panel.contentView
+//     Adding a VEV ancestor caused glass-goes-square-on-sheet regression.
+//   • CAShapeLayer mask on any layer
+//   • Any async re-assertion of cornerRadius after addChildWindow()
 //
 // HOSTING CONTROLLER VIEW TRANSPARENCY:
-//   NSHostingController creates its NSView with an opaque system background
-//   at the AppKit CALayer level. SwiftUI's .background(.clear) does NOT reach
-//   this layer — it only affects SwiftUI's own render tree above it.
-//   We zero the layer background AFTER glassView.contentView = hostingView
-//   so that the view is attached to a layer tree and .layer is non-nil.
-//   Zeroing it before attachment is a silent no-op (layer is nil at that point).
+//   NSHostingController creates its NSView with an opaque CALayer background.
+//   SwiftUI's .background(.clear) does NOT reach this layer.
+//   We zero layer.backgroundColor AFTER glassView.contentView = hostingView
+//   so the view is attached to a layer tree and .layer is non-nil.
+//   Zeroing before attachment is a silent no-op (layer is nil at that point).
 //
 // ROUNDED CORNERS — HISTORY:
 //   Approaches tried and rejected (ALL regress to rect corners on sheet open):
@@ -338,13 +308,6 @@ public final class MBKPopoverController: NSObject {
         mbkLog("PopoverController", "setupPanel — initialSize=(\(initialSize.width),\(initialSize.height))")
     }
 
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    // !! DO NOT TOUCH — roundedMaskImage() !!                               !!
-    //
-    // Produces the maskImage that keeps corners rounded through addChildWindow().
-    // capInsets + .stretch let it scale to any panel size without regenerating.
-    // Do not change the drawing, capInsets, or resizingMode.
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     /// Clips the AppKit frame-backing layer that lives *outside* contentView.
     /// A borderless NSPanel still composites a faint rectangular frame layer
     /// at window edges even with isOpaque=false + backgroundColor=.clear.
@@ -361,18 +324,6 @@ public final class MBKPopoverController: NSObject {
         // offscreen compositing pass, severing the live backdrop connection.
         // The glass falls back to flat/washed-out. cornerRadius alone is
         // sufficient to suppress the faint square border pixel artefacts.
-    }
-
-    private func roundedMaskImage(radius: CGFloat) -> NSImage {
-        let size = NSSize(width: radius * 2 + 1, height: radius * 2 + 1)
-        let image = NSImage(size: size, flipped: false) { rect in
-            NSColor.black.set()
-            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
-            return true
-        }
-        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
-        image.resizingMode = .stretch
-        return image
     }
 
     private func clamp(_ size: CGSize) -> CGSize {
@@ -401,8 +352,9 @@ public final class MBKPopoverController: NSObject {
             return
         }
 
+        let clampedX = min(anchorX, (panel.screen ?? NSScreen.main.unsafelyUnwrapped).visibleFrame.maxX - clamped.width)
         let newOrigin = NSPoint(
-            x: round(anchorX - clamped.width / 2),
+            x: round(max(clampedX, (panel.screen ?? NSScreen.main.unsafelyUnwrapped).visibleFrame.minX)),
             y: round(anchorY - clamped.height)
         )
         let newFrame = NSRect(origin: newOrigin, size: clamped)
