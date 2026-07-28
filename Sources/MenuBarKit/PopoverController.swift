@@ -294,8 +294,12 @@ public final class MBKPopoverController: NSObject {
         // ─────────────────────────────────────────────────────────────────────────────
 
         // 1. Glass view as contentView — cornerRadius clips natively, no offscreen pass.
+        //    .regular style gives a darker prominent material (like a menu or panel).
+        //    Default (.automatic) renders as light/clear glass — too bright for a
+        //    dark menu-bar popover sitting over a light desktop.
         let glassView = NSGlassEffectView(frame: NSRect(origin: .zero, size: initialSize))
         glassView.cornerRadius = cornerRadius
+        glassView.style = .regular
         glassView.autoresizingMask = [.width, .height]
 
         // 2. Hosting view — transparent so glass shows through.
