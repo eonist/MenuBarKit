@@ -106,6 +106,8 @@ public final class MBKPopoverController: NSObject {
 
     private var sizeObservation: NSKeyValueObservation?
     private var isSetUp = false
+    // nonisolated(unsafe) is safe here: both callbacks dispatch back to @MainActor
+    // via Task { @MainActor in … } before touching any shared state.
     nonisolated(unsafe) private var eventMonitor: Any?
     nonisolated(unsafe) private var workspaceObserver: NSObjectProtocol?
 
@@ -357,6 +359,9 @@ public final class MBKPopoverController: NSObject {
             return
         }
         let currentSize = panel.frame.size
+        // Sub-pixel filter: skip setFrame if the size delta is less than 1pt.
+        // SwiftUI can emit fractional preferredContentSize changes that round to
+        // the same display point — calling setFrame on every one causes unnecessary thrash.
         guard abs(currentSize.width  - clamped.width)  >= 1
            || abs(currentSize.height - clamped.height) >= 1 else {
             mbkLog("PopoverController", "applyContentSize — no-op: size unchanged")
@@ -387,6 +392,9 @@ public final class MBKPopoverController: NSObject {
 
     // MARK: - Workspace observer
 
+    // Closes the panel when the user switches to another app, matching the
+    // auto-dismiss behaviour of system status-bar panels (Spotlight, Control Centre).
+    // The overlayGate guard keeps it open while a sheet or picker is active.
     private func setupWorkspaceObserver() {
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -413,6 +421,9 @@ public final class MBKPopoverController: NSObject {
 
     // MARK: - Event monitor
 
+    // Global mouse-down monitor closes the panel on outside clicks.
+    // MUST be removed on close — a leaked monitor fires on every click system-wide,
+    // even with the panel hidden. startEventMonitor/stopEventMonitor are always paired.
     private func startEventMonitor() {
         guard eventMonitor == nil else { return }
         eventMonitor = NSEvent.addGlobalMonitorForEvents(
