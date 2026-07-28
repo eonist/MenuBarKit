@@ -225,6 +225,9 @@ public final class MBKPopoverController: NSObject {
         mbkLog("PopoverController", "closePanel — closed")
     }
 
+    /// Drives the status-button's pressed appearance while the panel is open.
+    /// Uses `highlight(_:)` rather than `isHighlighted`: `isHighlighted` resets
+    /// to false the moment the panel takes key status; `highlight(_:)` persists.
     private func setButtonHighlight(_ on: Bool) {
         statusItem.button?.highlight(on)
     }
