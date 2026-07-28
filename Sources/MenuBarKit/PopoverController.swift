@@ -114,6 +114,12 @@ public final class MBKPopoverController: NSObject {
 
     private let cornerRadius: CGFloat = 20
 
+    private enum GlassConfig {
+        static let variant: Int = 1
+        static let subduedState: Int = 1
+        static let scrimState: Int = 1
+    }
+
     /// Root view captured at init; consumed once by setupPanel.
     private var pendingRootView: AnyView
 
@@ -260,9 +266,9 @@ public final class MBKPopoverController: NSObject {
         glassView.cornerRadius = cornerRadius
         glassView.style = .regular
         glassView.autoresizingMask = [.width, .height]
-        glassView.setValue(1, forKey: "_subduedState")
-        glassView.setValue(1, forKey: "_variant")
-        glassView.setValue(1, forKey: "_scrimState")
+        glassView.setValue(GlassConfig.subduedState, forKey: "_subduedState")
+        glassView.setValue(GlassConfig.variant, forKey: "_variant")
+        glassView.setValue(GlassConfig.scrimState, forKey: "_scrimState")
 
         // 2. Hosting view — transparent so glass shows through.
         hostingController.view.wantsLayer = true
