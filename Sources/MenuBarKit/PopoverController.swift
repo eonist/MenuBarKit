@@ -203,10 +203,10 @@ public final class MBKPopoverController: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         setButtonHighlight(true)
         mbkLog("PopoverController", "openPanel — frame=(\(panel.frame)) isKeyWindow=(\(panel.isKeyWindow))")
-        // Zero drawsBackground on every NSScrollView SwiftUI created.
-        // Must be deferred one runloop tick: makeKeyAndOrderFront triggers SwiftUI's
-        // first layout pass asynchronously, so NSScrollView instances don't exist yet
-        // at the point this line would run synchronously.
+        // Zero drawsBackground on every NSScrollView SwiftUI creates.
+        // Deferred one run-loop tick: makeKeyAndOrderFront triggers SwiftUI's first
+        // layout pass asynchronously, so scroll views don't exist until this fires.
+        // (A synchronous call here would be a no-op — no scroll views exist yet.)
         DispatchQueue.main.async { [weak self] in
             self?.panel.contentView?.descendantScrollViews().forEach { $0.drawsBackground = false }
         }
@@ -276,10 +276,6 @@ public final class MBKPopoverController: NSObject {
         hostingController.view.frame = glassView.bounds
         hostingController.view.autoresizingMask = [.width, .height]
         glassView.contentView = hostingController.view
-
-        // 3. Zero drawsBackground on any NSScrollView — SwiftUI's
-        //    .scrollContentBackground(.hidden) only hides SwiftUI's layer.
-        hostingController.view.descendantScrollViews().forEach { $0.drawsBackground = false }
 
         panel.contentView = glassView
 
