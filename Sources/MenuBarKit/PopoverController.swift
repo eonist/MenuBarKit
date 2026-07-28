@@ -121,7 +121,7 @@ public final class MBKPopoverController: NSObject {
     }
 
     /// Root view captured at init; consumed once by setupPanel.
-    private var pendingRootView: AnyView
+    private let pendingRootView: AnyView
 
     // MARK: - Init
 
