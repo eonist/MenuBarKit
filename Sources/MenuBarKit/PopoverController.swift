@@ -61,8 +61,9 @@
 //   2. Inner — NSGlassEffectView
 //      Pinned to fill clipView. Provides the Tahoe liquid-glass material.
 //      hostingController.view is assigned to its contentView property.
-//      Do NOT set .style on glassView — the default style is correct for a
-//      floating panel. .regular adds a tinting overlay that makes it grey.
+//      .style = .regular — gives a dark prominent material matching system
+//      menus and status-bar panels (e.g. Weather). The default .automatic
+//      renders as light/clear glass — too bright for a dark menu-bar panel.
 //      Do NOT set wantsLayer or layer.backgroundColor on glassView — it
 //      interferes with the private glass compositor.
 //
@@ -82,10 +83,18 @@
 //   4. NSGlassEffectView.clipsToBounds                  → reset by addChildWindow()
 //   5. NSPanel subclass overriding addChildWindow()     → AppKit resets again async after super
 //   6. DispatchQueue.main.async re-assertion            → still a race, still regresses
-//   7. NSVisualEffectView.maskImage wrapping NSGlassEffectView — WORKS. (current approach)
-//   8. maskImage on NSGlassEffectView directly          → COMPILE ERROR: no maskImage property
-//   9. clipView.material = .clear                       → COMPILE ERROR: no such member
-//  10. clipView.blendingMode = .behindWindow            → VEV renders dark vibrancy, grey panel
+//   7. plain NSView wrapper + masksToBounds = true      → WORKS for corners BUT forces offscreen
+//                                                          compositing pass → glass goes flat
+//                                                          dark rectangle when sheet opens
+//   8. NSVisualEffectView.maskImage wrapping NSGlassEffectView → previously used, removed
+//   9. maskImage on NSGlassEffectView directly          → COMPILE ERROR: no maskImage property
+//  10. clipView.material = .clear                       → COMPILE ERROR: no such member
+//  11. clipView.blendingMode = .behindWindow            → VEV renders dark vibrancy, grey panel
+//
+//  CURRENT (working): NSGlassEffectView as direct panel.contentView
+//    glassView.cornerRadius clips natively inside glass compositor — no offscreen pass,
+//    survives addChildWindow. clipWindowFrameBacking() rounds the AppKit frame-backing
+//    layer (contentView.superview) to suppress residual square border pixels.
 //
 // CORNER RADIUS VALUE:
 //   20pt matches system status-bar panels (Weather, etc.) on macOS 26.
@@ -217,9 +226,13 @@ public final class MBKPopoverController: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         setButtonHighlight(true)
         mbkLog("PopoverController", "openPanel — frame=(\(panel.frame)) isKeyWindow=(\(panel.isKeyWindow))")
-        // Zero drawsBackground on any scroll views that SwiftUI may have created
-        // during the first layout pass (they don't exist at setupPanel time).
-        panel.contentView?.descendantScrollViews().forEach { $0.drawsBackground = false }
+        // Zero drawsBackground on every NSScrollView SwiftUI created.
+        // Must be deferred one runloop tick: makeKeyAndOrderFront triggers SwiftUI's
+        // first layout pass asynchronously, so NSScrollView instances don't exist yet
+        // at the point this line would run synchronously.
+        DispatchQueue.main.async { [weak self] in
+            self?.panel.contentView?.descendantScrollViews().forEach { $0.drawsBackground = false }
+        }
         startEventMonitor()
     }
 
