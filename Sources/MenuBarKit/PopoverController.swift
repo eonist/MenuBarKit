@@ -41,9 +41,11 @@
 // HOSTING CONTROLLER VIEW TRANSPARENCY:
 //   NSHostingController creates its NSView with an opaque CALayer background.
 //   SwiftUI's .background(.clear) does NOT reach this layer.
-//   We zero layer.backgroundColor AFTER glassView.contentView = hostingView
-//   so the view is attached to a layer tree and .layer is non-nil.
-//   Zeroing before attachment is a silent no-op (layer is nil at that point).
+//   wantsLayer = true forces immediate layer creation, so layer is non-nil before
+//   the view is attached to any superview. layer?.backgroundColor can therefore be
+//   zeroed immediately after wantsLayer = true — ordering relative to contentView
+//   assignment does not matter. (An earlier version of this header incorrectly stated
+//   that zeroing before attachment was a silent no-op — that was wrong.)
 //
 // ROUNDED CORNERS — HISTORY:
 //   Approaches tried and rejected (ALL regress to rect corners on sheet open):
@@ -119,10 +121,9 @@ public final class MBKPopoverController: NSObject {
     // NSGlassEffectView private KVC keys — all three set to 1 to produce dark glass.
     //
     // Each key controls a distinct stage of the same compositor pipeline:
-    //   _subduedState = 1  Activates a mode that ignores desktop-content colour and
-    //                      renders the glass at its own dark intrinsic tone. Despite
-    //                      the name, "subdued" means muted toward desktop content —
-    //                      so = 1 *disables* that sampling and locks in the dark tone.
+    //   _subduedState = 1  Locks the glass to its own dark intrinsic tone instead of
+    //                      sampling desktop colours. ("Subdued" in Apple's naming means
+    //                      muted-toward-desktop; = 1 disables that sampling.)
     //   _variant      = 1  Selects the dark-glass rendering variant of the compositor.
     //   _scrimState   = 1  Enables the scrim layer that reinforces the dark tone.
     //
@@ -295,7 +296,8 @@ public final class MBKPopoverController: NSObject {
         //
         //    .regular is the required public-API base that puts the compositor in the right
         //    ballpark (darker, prominent material matching system panels). The three _KVC calls
-        //    below fine-tune on top of it — they have no effect without .regular as the base.
+        //    below fine-tune on top of it — observed to have no effect without .regular as the
+        //    base (unverified against Apple source; may change in future OS releases).
         //    Default (.automatic) renders as light/clear glass — too bright for a dark popover.
         let glassView = NSGlassEffectView(frame: NSRect(origin: .zero, size: initialSize))
         glassView.cornerRadius = cornerRadius
