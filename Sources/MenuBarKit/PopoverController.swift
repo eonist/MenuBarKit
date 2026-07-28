@@ -49,8 +49,10 @@
 //   Approaches tried and rejected (ALL regress to rect corners on sheet open):
 //   1. NSVisualEffectView.cornerRadius / masksToBounds  → reset by addChildWindow()
 //   2. CAShapeLayer mask                                → clips pixels, not blur compositor
-//   3. NSGlassEffectView.cornerRadius alone             → reset by addChildWindow()
-//   4. NSGlassEffectView.clipsToBounds                  → reset by addChildWindow()
+//   3. NSGlassEffectView.cornerRadius (with VEV ancestor as contentView)
+//                                                        → reset by addChildWindow()
+//   4. NSGlassEffectView.clipsToBounds (same VEV-ancestor setup)
+//                                                        → reset by addChildWindow()
 //   5. NSPanel subclass overriding addChildWindow()     → AppKit resets again async after super
 //   6. DispatchQueue.main.async re-assertion            → still a race, still regresses
 //   7. plain NSView wrapper + masksToBounds = true      → WORKS for corners BUT forces offscreen
@@ -266,21 +268,35 @@ public final class MBKPopoverController: NSObject {
             }
         }
 
+        // .nonactivatingPanel is intentional — do not remove.
+        // (a) MBKFilePicker uses styleMask.contains(.nonactivatingPanel) as a window
+        //     discriminator to identify this panel among all NSApp.windows.
+        // (b) Prevents the panel from stealing key focus from the frontmost app when clicked.
+        // makeKeyAndOrderFront() + NSApp.activate() override the non-activation at open time
+        // so the panel still receives keyboard input when it needs to.
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: initialSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        panel.level = .popUpMenu
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.level = .popUpMenu   // matches system status-bar panels (Weather, Control Centre);
+                                   // floats above .floating windows; survives space switches
+        panel.isOpaque = false          // required — opaque window suppresses the glass compositor
+        panel.backgroundColor = .clear  // required — non-clear bg paints over the glass layer
+        panel.hasShadow = true          // WindowServer renders shadow independently of the glass compositor — safe
 
-        // 1. Glass view as contentView — cornerRadius clips natively, no offscreen pass.
-        //    .regular style gives a darker prominent material (like a menu or panel).
-        //    Default (.automatic) renders as light/clear glass — too bright for a
-        //    dark menu-bar popover sitting over a light desktop.
+        // 1. Glass view as direct panel.contentView — cornerRadius clips natively, no offscreen pass.
+        //    CRITICAL: NSGlassEffectView must BE the direct panel.contentView.
+        //    Any intervening layer-backed ancestor (NSVisualEffectView, a plain wantsLayer=true
+        //    view) routes the glass through an offscreen compositing pass — corners then revert
+        //    to rect when addChildWindow() fires (e.g. on sheet open). Direct contentView is the
+        //    only position that survives addChildWindow() without regression.
+        //
+        //    .regular is the required public-API base that puts the compositor in the right
+        //    ballpark (darker, prominent material matching system panels). The three _KVC calls
+        //    below fine-tune on top of it — they have no effect without .regular as the base.
+        //    Default (.automatic) renders as light/clear glass — too bright for a dark popover.
         let glassView = NSGlassEffectView(frame: NSRect(origin: .zero, size: initialSize))
         glassView.cornerRadius = cornerRadius
         glassView.style = .regular
@@ -298,7 +314,7 @@ public final class MBKPopoverController: NSObject {
 
         panel.contentView = glassView
 
-        // 4. Clip the AppKit frame-backing layer that sits outside contentView.
+        // 3. Clip the AppKit frame-backing layer that sits outside contentView.
         //    This suppresses the faint rectangular border pixels at window edges
         //    without touching the glass compositor.
         clipWindowFrameBacking(panel, cornerRadius: cornerRadius)
@@ -311,6 +327,10 @@ public final class MBKPopoverController: NSObject {
     /// Rounding that layer's corners removes the square pixel artefacts without
     /// touching the glass view hierarchy or triggering an offscreen pass.
     private func clipWindowFrameBacking(_ panel: NSPanel, cornerRadius: CGFloat) {
+        // panel.contentView?.superview is NSThemeFrame — AppKit's private window-chrome
+        // view that wraps the entire window. It exists on borderless panels and composites
+        // a faint rectangular frame at window edges, visible as square pixel artefacts
+        // when backgroundColor = .clear. We round its layer without masksToBounds (see below).
         guard let frameView = panel.contentView?.superview else { return }
         frameView.wantsLayer = true
         frameView.layer?.backgroundColor = NSColor.clear.cgColor
