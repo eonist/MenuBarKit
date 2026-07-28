@@ -122,6 +122,7 @@ public final class MBKPopoverController: NSObject {
     private var statusItem: NSStatusItem!
     private var panel: NSPanel!
     private var hostingController: NSHostingController<AnyView>!
+
     private var sizeObservation: NSKeyValueObservation?
     private var isSetUp = false
     nonisolated(unsafe) private var eventMonitor: Any?
@@ -215,7 +216,10 @@ public final class MBKPopoverController: NSObject {
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         setButtonHighlight(true)
-        mbkLog("PopoverController", "openPanel — frame=(\(panel.frame))")
+        mbkLog("PopoverController", "openPanel — frame=(\(panel.frame)) isKeyWindow=(\(panel.isKeyWindow))")
+        // Zero drawsBackground on any scroll views that SwiftUI may have created
+        // during the first layout pass (they don't exist at setupPanel time).
+        panel.contentView?.descendantScrollViews().forEach { $0.drawsBackground = false }
         startEventMonitor()
     }
 
@@ -255,7 +259,7 @@ public final class MBKPopoverController: NSObject {
 
         panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: initialSize),
-            styleMask: [.borderless, .nonactivatingPanel],
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
@@ -264,68 +268,53 @@ public final class MBKPopoverController: NSObject {
         panel.backgroundColor = .clear
         panel.hasShadow = true
 
-        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        // !! DO NOT TOUCH THIS BLOCK — ROUNDED CORNERS DEPEND ON IT ENTIRELY !!
-        //
-        // clipView is an NSVisualEffectView whose ONLY role is to hold maskImage.
-        // maskImage is the sole clipping technique that survives addChildWindow()
-        // when a sheet is presented. See ROUNDED CORNERS — HISTORY in the file header.
-        //
-        // blendingMode = .withinWindow is REQUIRED — see file header for explanation.
-        // Do NOT change blendingMode to .behindWindow (renders dark vibrancy under glass).
-        //
-        // Rules:
-        //   • clipView MUST be panel.contentView — do not add any wrapper above it.
-        //   • clipView.maskImage MUST be set to roundedMaskImage() — do not remove it.
-        //   • clipView.blendingMode MUST stay .withinWindow — do not change it.
-        //   • Do NOT set cornerRadius, masksToBounds, or wantsLayer=false on clipView.
-        //   • Do NOT replace clipView with any other view type.
-        //   • Do NOT make NSGlassEffectView the direct panel.contentView.
-        //   • NSGlassEffectView has NO maskImage property — do not attempt to set one.
-        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        let clipView = NSVisualEffectView()
-        clipView.blendingMode = .withinWindow  // ← MUST be .withinWindow — see above
-        clipView.state = .active
-        clipView.wantsLayer = true
-        clipView.maskImage = roundedMaskImage(radius: cornerRadius) // ← DO NOT REMOVE
 
-        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        // !! DO NOT TOUCH THIS BLOCK — LIQUID GLASS MATERIAL !!              !!
+        // ── View hierarchy ────────────────────────────────────────────────────────────
         //
-        // NSGlassEffectView provides the Tahoe liquid-glass material.
-        // It MUST be a subview of clipView (not panel.contentView directly).
-        // hostingController.view MUST be assigned via .contentView (not addSubview).
+        //   panel.contentView → NSGlassEffectView  (cornerRadius set here)
+        //                           contentView → hostingController.view
         //
-        // Do NOT set glassView.style — the default is correct for a floating panel.
-        // .regular adds a dark tinting overlay that makes the panel look grey.
+        //   + clipWindowFrameBacking(panel) clips the AppKit frame-backing layer
+        //     that lives *outside* contentView — suppresses the faint square pixels
+        //     at the window border without affecting glass compositing.
         //
-        // Do NOT set glassView.wantsLayer or glassView.layer?.backgroundColor —
-        // touching the glass view's layer interferes with the private glass compositor.
+        // WHY NO masksToBounds on any view:
+        //   masksToBounds = true on any ancestor of NSGlassEffectView forces the
+        //   entire window into an offscreen compositing pass, severing the live
+        //   backdrop connection. The glass falls back to a flat dark rectangle
+        //   whenever a sheet / alert child-window is attached.
         //
-        // Do NOT set cornerRadius or clipsToBounds on glassView — both are reset
-        // by addChildWindow(). Corner clipping is handled solely by clipView.maskImage.
-        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        let glassView = NSGlassEffectView()
-        // ← NO .style set — default style is correct. .regular = grey tinting overlay, do not use.
-        glassView.contentView = hostingController.view  // ← .contentView, NOT addSubview
+        //   NSGlassEffectView.cornerRadius clips the glass content natively inside
+        //   the private glass compositor — no offscreen pass, survives addChildWindow.
+        //
+        // WHY NSGlassEffectView IS the direct panel.contentView here (not a wrapper):
+        //   The previous pattern (plain NSView wrapper + masksToBounds) caused the
+        //   glass-goes-square-on-sheet bug shown in the screenshot. Removing the
+        //   wrapper and using .cornerRadius directly is the correct fix.
+        // ─────────────────────────────────────────────────────────────────────────────
 
-        // !! TRANSPARENCY — DO NOT MOVE THIS ABOVE glassView.contentView assignment !!
-        // hostingController.view.layer is nil until the view is attached to a layer tree.
-        // We zero the CALayer background here, after attachment, so the call is non-nil
-        // and actually takes effect. Moving it before contentView assignment = silent no-op.
+        // 1. Glass view as contentView — cornerRadius clips natively, no offscreen pass.
+        let glassView = NSGlassEffectView(frame: NSRect(origin: .zero, size: initialSize))
+        glassView.cornerRadius = cornerRadius
+        glassView.autoresizingMask = [.width, .height]
+
+        // 2. Hosting view — transparent so glass shows through.
         hostingController.view.wantsLayer = true
-        hostingController.view.layer?.backgroundColor = .clear
+        hostingController.view.layer?.backgroundColor = CGColor.clear
+        hostingController.view.frame = glassView.bounds
+        hostingController.view.autoresizingMask = [.width, .height]
+        glassView.contentView = hostingController.view
 
-        glassView.translatesAutoresizingMaskIntoConstraints = false
-        clipView.addSubview(glassView)
-        NSLayoutConstraint.activate([
-            glassView.topAnchor.constraint(equalTo: clipView.topAnchor),
-            glassView.bottomAnchor.constraint(equalTo: clipView.bottomAnchor),
-            glassView.leadingAnchor.constraint(equalTo: clipView.leadingAnchor),
-            glassView.trailingAnchor.constraint(equalTo: clipView.trailingAnchor),
-        ])
+        // 3. Zero drawsBackground on any NSScrollView — SwiftUI's
+        //    .scrollContentBackground(.hidden) only hides SwiftUI's layer.
+        hostingController.view.descendantScrollViews().forEach { $0.drawsBackground = false }
 
-        panel.contentView = clipView  // ← clipView MUST be panel.contentView
+        panel.contentView = glassView
+
+        // 4. Clip the AppKit frame-backing layer that sits outside contentView.
+        //    This suppresses the faint rectangular border pixels at window edges
+        //    without touching the glass compositor.
+        clipWindowFrameBacking(panel, cornerRadius: cornerRadius)
         mbkLog("PopoverController", "setupPanel — initialSize=(\(initialSize.width),\(initialSize.height))")
     }
 
@@ -336,6 +325,20 @@ public final class MBKPopoverController: NSObject {
     // capInsets + .stretch let it scale to any panel size without regenerating.
     // Do not change the drawing, capInsets, or resizingMode.
     // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    /// Clips the AppKit frame-backing layer that lives *outside* contentView.
+    /// A borderless NSPanel still composites a faint rectangular frame layer
+    /// at window edges even with isOpaque=false + backgroundColor=.clear.
+    /// Rounding that layer's corners removes the square pixel artefacts without
+    /// touching the glass view hierarchy or triggering an offscreen pass.
+    private func clipWindowFrameBacking(_ panel: NSPanel, cornerRadius: CGFloat) {
+        guard let frameView = panel.contentView?.superview else { return }
+        frameView.wantsLayer = true
+        frameView.layer?.backgroundColor = NSColor.clear.cgColor
+        frameView.layer?.cornerRadius = cornerRadius
+        frameView.layer?.cornerCurve = .continuous
+        frameView.layer?.masksToBounds = true
+    }
+
     private func roundedMaskImage(radius: CGFloat) -> NSImage {
         let size = NSSize(width: radius * 2 + 1, height: radius * 2 + 1)
         let image = NSImage(size: size, flipped: false) { rect in
@@ -440,5 +443,17 @@ public final class MBKPopoverController: NSObject {
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
         }
+    }
+}
+
+private extension NSView {
+    /// Returns all NSScrollView descendants in the view tree.
+    func descendantScrollViews() -> [NSScrollView] {
+        var result: [NSScrollView] = []
+        for sub in subviews {
+            if let sv = sub as? NSScrollView { result.append(sv) }
+            result.append(contentsOf: sub.descendantScrollViews())
+        }
+        return result
     }
 }
