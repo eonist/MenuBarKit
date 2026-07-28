@@ -114,6 +114,9 @@ public final class MBKPopoverController: NSObject {
 
     private let cornerRadius: CGFloat = 20
 
+    /// Root view captured at init; consumed once by setupPanel.
+    private var pendingRootView: AnyView
+
     // MARK: - Init
 
     public init<Content: View>(
@@ -133,8 +136,6 @@ public final class MBKPopoverController: NSObject {
         self.maxHeight = maxHeight
         self.pendingRootView = AnyView(rootView)
     }
-
-    private var pendingRootView: AnyView
 
     // MARK: - Setup
 
@@ -251,31 +252,6 @@ public final class MBKPopoverController: NSObject {
         panel.backgroundColor = .clear
         panel.hasShadow = true
 
-
-        // ── View hierarchy ────────────────────────────────────────────────────────────
-        //
-        //   panel.contentView → NSGlassEffectView  (cornerRadius set here)
-        //                           contentView → hostingController.view
-        //
-        //   + clipWindowFrameBacking(panel) clips the AppKit frame-backing layer
-        //     that lives *outside* contentView — suppresses the faint square pixels
-        //     at the window border without affecting glass compositing.
-        //
-        // WHY NO masksToBounds on any view:
-        //   masksToBounds = true on any ancestor of NSGlassEffectView forces the
-        //   entire window into an offscreen compositing pass, severing the live
-        //   backdrop connection. The glass falls back to a flat dark rectangle
-        //   whenever a sheet / alert child-window is attached.
-        //
-        //   NSGlassEffectView.cornerRadius clips the glass content natively inside
-        //   the private glass compositor — no offscreen pass, survives addChildWindow.
-        //
-        // WHY NSGlassEffectView IS the direct panel.contentView here (not a wrapper):
-        //   The previous pattern (plain NSView wrapper + masksToBounds) caused the
-        //   glass-goes-square-on-sheet bug shown in the screenshot. Removing the
-        //   wrapper and using .cornerRadius directly is the correct fix.
-        // ─────────────────────────────────────────────────────────────────────────────
-
         // 1. Glass view as contentView — cornerRadius clips natively, no offscreen pass.
         //    .regular style gives a darker prominent material (like a menu or panel).
         //    Default (.automatic) renders as light/clear glass — too bright for a
@@ -352,9 +328,13 @@ public final class MBKPopoverController: NSObject {
             return
         }
 
-        let clampedX = min(anchorX, (panel.screen ?? NSScreen.main.unsafelyUnwrapped).visibleFrame.maxX - clamped.width)
+        guard let screen = panel.screen ?? NSScreen.main else {
+            mbkLog("PopoverController", "applyContentSize — aborted: no screen")
+            return
+        }
+        let clampedX = min(anchorX, screen.visibleFrame.maxX - clamped.width)
         let newOrigin = NSPoint(
-            x: round(max(clampedX, (panel.screen ?? NSScreen.main.unsafelyUnwrapped).visibleFrame.minX)),
+            x: round(max(clampedX, screen.visibleFrame.minX)),
             y: round(anchorY - clamped.height)
         )
         let newFrame = NSRect(origin: newOrigin, size: clamped)

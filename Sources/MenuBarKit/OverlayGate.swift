@@ -69,16 +69,4 @@ public final class MBKOverlayGate {
     /// Creates a new gate with no active overlay.
     public init() {}
 
-    /// ⚠️ Deprecated — use `.mbkAlert()` modifier instead.
-    ///
-    /// Spike-only escape hatch retained for source compatibility while
-    /// call sites migrate to `mbkAlert`. Will be removed once all callers
-    /// are updated.
-    ///
-    /// Direct mutation does not compose safely with concurrent overlays;
-    /// `MBKAlertModifier` handles the concurrent-sheet case correctly.
-    @available(*, deprecated, renamed: "mbkAlert", message: "Use the .mbkAlert() ViewModifier instead of mbkSetOverlay(). See Alert.swift.")
-    public func mbkSetOverlay(_ active: Bool) {
-        hasActiveOverlay = active
-    }
 }
