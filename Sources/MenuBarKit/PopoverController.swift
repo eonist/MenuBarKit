@@ -58,10 +58,8 @@
 //   7. plain NSView wrapper + masksToBounds = true      → WORKS for corners BUT forces offscreen
 //                                                          compositing pass → glass goes flat
 //                                                          dark rectangle when sheet opens
-//   8. NSVisualEffectView.maskImage wrapping NSGlassEffectView → previously used, removed
-//   9. maskImage on NSGlassEffectView directly          → COMPILE ERROR: no maskImage property
-//  10. clipView.material = .clear                       → COMPILE ERROR: no such member
-//  11. clipView.blendingMode = .behindWindow            → VEV renders dark vibrancy, grey panel
+//   8–11. Various NSVisualEffectView clipView material/blending/maskImage approaches
+//          → all removed; clipView no longer exists in the codebase. See PR #29.
 //
 //  CURRENT (working): NSGlassEffectView as direct panel.contentView
 //    glassView.cornerRadius clips natively inside glass compositor — no offscreen pass,
@@ -308,8 +306,14 @@ public final class MBKPopoverController: NSObject {
         glassView.setValue(GlassConfig.scrimState, forKey: "_scrimState")
 
         // 2. Hosting view — transparent so glass shows through.
+        //    ORDER MATTERS: wantsLayer = true forces immediate layer creation, so
+        //    layer?.backgroundColor can be zeroed here before contentView assignment.
+        //    If these two lines were moved after glassView.contentView = hostingController.view,
+        //    the assignment would still work — but reversing just backgroundColor and contentView
+        //    would make layer nil at zero-time, silently leaving the hosting view opaque white
+        //    over the glass. Keep backgroundColor = .clear BEFORE contentView assignment.
         hostingController.view.wantsLayer = true
-        hostingController.view.layer?.backgroundColor = CGColor.clear
+        hostingController.view.layer?.backgroundColor = CGColor.clear  // must precede contentView assignment
         hostingController.view.frame = glassView.bounds
         hostingController.view.autoresizingMask = [.width, .height]
         glassView.contentView = hostingController.view
