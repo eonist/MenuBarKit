@@ -127,8 +127,8 @@ public final class MBKPopoverController: NSObject {
     //   _variant      = 1  Selects the dark-glass rendering variant of the compositor.
     //   _scrimState   = 1  Enables the scrim layer that reinforces the dark tone.
     //
-    // All three must be set together. Each alone leaves the other two at their
-    // defaults, which pull in opposite directions — the net result is light glass.
+    // All three must be set together. Setting fewer than all three leaves the
+    // pipeline misaligned — partial combinations produce light or inconsistent glass.
     // All three at 1 aligns the entire pipeline so they reinforce each other.
     //
     // These KVC values only affect tint/intensity, not the compositing path, so
@@ -312,14 +312,12 @@ public final class MBKPopoverController: NSObject {
         glassView.setValue(GlassConfig.scrimState, forKey: "_scrimState")
 
         // Hosting view — transparent so glass shows through.
-        //    ORDER MATTERS: wantsLayer = true forces immediate layer creation, so
-        //    layer?.backgroundColor can be zeroed here before contentView assignment.
-        //    If these two lines were moved after glassView.contentView = hostingController.view,
-        //    the assignment would still work — but reversing just backgroundColor and contentView
-        //    would make layer nil at zero-time, silently leaving the hosting view opaque white
-        //    over the glass. Keep backgroundColor = .clear BEFORE contentView assignment.
+        //    wantsLayer = true forces immediate layer creation — layer is non-nil right after.
+        //    layer?.backgroundColor must follow wantsLayer = true, but can precede or follow
+        //    the contentView assignment below. The contentView assignment is irrelevant to
+        //    layer creation; only wantsLayer = true matters for layer to be non-nil.
         hostingController.view.wantsLayer = true
-        hostingController.view.layer?.backgroundColor = CGColor.clear  // must precede contentView assignment
+        hostingController.view.layer?.backgroundColor = CGColor.clear
         hostingController.view.frame = glassView.bounds
         hostingController.view.autoresizingMask = [.width, .height]
         glassView.contentView = hostingController.view
