@@ -204,32 +204,7 @@ public struct MBKAnchoredSheetModifier<SheetContent: View>: ViewModifier {
     /// Finds the sheet NSWindow and wires it as a child of the popover window.
     @MainActor
     private func anchorSheetWindow() {
-        // Single-instance assumption: picks the first .nonactivatingPanel window.
-        // If the host app creates two MBKPopoverController instances (two status
-        // items), this may resolve the wrong popover window. See FilePicker.swift
-        // for the same note. Fine for the current single-popover use case.
-        guard let popoverWindow = NSApp.windows.first(where: {
-            $0.styleMask.contains(.nonactivatingPanel)
-        }) else {
-            mbkLog("AnchoredSheet", "no nonactivatingPanel window — sheet will not be anchored")
-            return
-        }
-        // Hop 2: drain one run-loop turn so the sheet NSWindow exists.
-        // ⚠️ SPIKE ONLY — replace with NSWindow.didBecomeKeyNotification before migrating.
-        // See SHEET WINDOW DISCRIMINATOR in the file header before strengthening the predicate.
-        #warning("SPIKE ONLY: replace DispatchQueue.main.async with NSWindow.didBecomeKeyNotification — see DISMISS-SAFETY GAP and TARGET IMPLEMENTATION in file header")
-        DispatchQueue.main.async {
-            if let sheetWindow = NSApp.windows.first(where: {
-                $0 !== popoverWindow
-                    && $0.styleMask.contains(.borderless)
-                    && $0.isKeyWindow
-            }) {
-                mbkLog("AnchoredSheet", "addChildWindow")
-                popoverWindow.addChildWindow(sheetWindow, ordered: .above)
-            } else {
-                mbkLog("AnchoredSheet", "no borderless+key window found")
-            }
-        }
+        mbkAnchorSheetWindow(label: "AnchoredSheet")
     }
 }
 
@@ -286,25 +261,42 @@ public struct MBKAnchoredSheetItemModifier<Item: Identifiable & Equatable, Sheet
     /// Finds the sheet NSWindow and wires it as a child of the popover window.
     @MainActor
     private func anchorSheetWindow() {
-        // Single-instance assumption: same as isPresented variant above.
-        guard let popoverWindow = NSApp.windows.first(where: {
-            $0.styleMask.contains(.nonactivatingPanel)
-        }) else {
-            mbkLog("AnchoredSheet[item]", "no nonactivatingPanel window — sheet will not be anchored")
-            return
-        }
-        #warning("SPIKE ONLY: replace DispatchQueue.main.async with NSWindow.didBecomeKeyNotification — see DISMISS-SAFETY GAP and TARGET IMPLEMENTATION in file header")
-        DispatchQueue.main.async {
-            if let sheetWindow = NSApp.windows.first(where: {
-                $0 !== popoverWindow
-                    && $0.styleMask.contains(.borderless)
-                    && $0.isKeyWindow
-            }) {
-                mbkLog("AnchoredSheet[item]", "addChildWindow")
-                popoverWindow.addChildWindow(sheetWindow, ordered: .above)
-            } else {
-                mbkLog("AnchoredSheet[item]", "no borderless+key window found")
-            }
+        mbkAnchorSheetWindow(label: "AnchoredSheet[item]")
+    }
+}
+
+// MARK: - Shared window-anchoring logic
+
+/// Locates the sheet NSWindow and wires it as a child of the popover window.
+/// Shared by `MBKAnchoredSheetModifier` and `MBKAnchoredSheetItemModifier` to
+/// avoid duplicating the window-discriminator predicate in two places.
+///
+/// Single-instance assumption: picks the first `.nonactivatingPanel` window.
+/// If the host app creates two `MBKPopoverController` instances, this may
+/// resolve the wrong popover. Fine for the current single-popover use case.
+/// See `FilePicker.swift` for the matching note on the same lookup.
+@MainActor
+fileprivate func mbkAnchorSheetWindow(label: String) {
+    guard let popoverWindow = NSApp.windows.first(where: {
+        $0.styleMask.contains(.nonactivatingPanel)
+    }) else {
+        mbkLog(label, "no nonactivatingPanel window — sheet will not be anchored")
+        return
+    }
+    // Hop 2: drain one run-loop turn so the sheet NSWindow exists.
+    // ⚠️ SPIKE ONLY — replace with NSWindow.didBecomeKeyNotification before migrating.
+    // See SHEET WINDOW DISCRIMINATOR in the file header before strengthening the predicate.
+    #warning("SPIKE ONLY: replace DispatchQueue.main.async with NSWindow.didBecomeKeyNotification — see DISMISS-SAFETY GAP and TARGET IMPLEMENTATION in file header")
+    DispatchQueue.main.async {
+        if let sheetWindow = NSApp.windows.first(where: {
+            $0 !== popoverWindow
+                && $0.styleMask.contains(.borderless)
+                && $0.isKeyWindow
+        }) {
+            mbkLog(label, "addChildWindow")
+            popoverWindow.addChildWindow(sheetWindow, ordered: .above)
+        } else {
+            mbkLog(label, "no borderless+key window found")
         }
     }
 }

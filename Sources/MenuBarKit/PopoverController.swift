@@ -95,6 +95,7 @@ public final class MBKPopoverController: NSObject {
     private let symbolName: String
     private let initialSize: NSSize
     private let minWidth: CGFloat
+    private let minHeight: CGFloat
     private let maxWidth: CGFloat
     private let maxHeight: CGFloat
 
@@ -139,8 +140,8 @@ public final class MBKPopoverController: NSObject {
         static let scrimState: Int = 1
     }
 
-    /// Root view captured at init; consumed once by setupPanel.
-    private let pendingRootView: AnyView
+    /// The hosting controller's root view, set at init.
+    private let rootView: AnyView
 
     // MARK: - Init
 
@@ -150,6 +151,7 @@ public final class MBKPopoverController: NSObject {
         symbolName: String = "menubar.rectangle",
         contentSize: NSSize = NSSize(width: 320, height: 300),
         minWidth: CGFloat = 200,
+        minHeight: CGFloat = 100,
         maxWidth: CGFloat = 600,
         maxHeight: CGFloat = 600
     ) {
@@ -157,9 +159,10 @@ public final class MBKPopoverController: NSObject {
         self.symbolName = symbolName
         self.initialSize = contentSize
         self.minWidth = minWidth
+        self.minHeight = minHeight
         self.maxWidth = maxWidth
         self.maxHeight = maxHeight
-        self.pendingRootView = AnyView(rootView)
+        self.rootView = AnyView(rootView)
     }
 
     // MARK: - Setup
@@ -258,7 +261,7 @@ public final class MBKPopoverController: NSObject {
     // MARK: - Panel setup
 
     private func setupPanel() {
-        hostingController = NSHostingController(rootView: pendingRootView)
+        hostingController = NSHostingController(rootView: rootView)
         hostingController.sizingOptions = .preferredContentSize
         mbkLog("PopoverController", "setupPanel — sizingOptions=.preferredContentSize")
 
@@ -357,7 +360,7 @@ public final class MBKPopoverController: NSObject {
     private func clamp(_ size: CGSize) -> CGSize {
         CGSize(
             width:  min(max(size.width,  minWidth), maxWidth),
-            height: min(max(size.height, 1),        maxHeight)  // 1pt floor: no public minHeight param; prevents degenerate zero-height frames
+            height: min(max(size.height, minHeight), maxHeight)
         )
     }
 
