@@ -287,7 +287,7 @@ public final class MBKPopoverController: NSObject {
         panel.backgroundColor = .clear  // required — non-clear bg paints over the glass layer
         panel.hasShadow = true          // WindowServer renders shadow independently of the glass compositor — safe
 
-        // 1. Glass view as direct panel.contentView — cornerRadius clips natively, no offscreen pass.
+        // Glass view as direct panel.contentView — cornerRadius clips natively, no offscreen pass.
         //    CRITICAL: NSGlassEffectView must BE the direct panel.contentView.
         //    Any intervening layer-backed ancestor (NSVisualEffectView, a plain wantsLayer=true
         //    view) routes the glass through an offscreen compositing pass — corners then revert
@@ -303,11 +303,15 @@ public final class MBKPopoverController: NSObject {
         glassView.cornerRadius = cornerRadius
         glassView.style = .regular
         glassView.autoresizingMask = [.width, .height]
+        // Private KVC — fine-tunes glass depth on top of .regular.
+        // Counter-intuitive: value 1 produces darker/richer glass than 0 in this
+        // panel context. Do NOT revert to 0 — empirically verified lighter on macOS 26.
+        // These keys are undocumented and may change in a future OS update.
         glassView.setValue(GlassConfig.subduedState, forKey: "_subduedState")
         glassView.setValue(GlassConfig.variant, forKey: "_variant")
         glassView.setValue(GlassConfig.scrimState, forKey: "_scrimState")
 
-        // 2. Hosting view — transparent so glass shows through.
+        // Hosting view — transparent so glass shows through.
         //    ORDER MATTERS: wantsLayer = true forces immediate layer creation, so
         //    layer?.backgroundColor can be zeroed here before contentView assignment.
         //    If these two lines were moved after glassView.contentView = hostingController.view,
@@ -322,9 +326,8 @@ public final class MBKPopoverController: NSObject {
 
         panel.contentView = glassView
 
-        // 3. Clip the AppKit frame-backing layer that sits outside contentView.
-        //    This suppresses the faint rectangular border pixels at window edges
-        //    without touching the glass compositor.
+        // Clip the AppKit NSThemeFrame layer — suppresses faint square border pixels.
+        //    NO masksToBounds (see clipWindowFrameBacking) — would sever glass compositor.
         clipWindowFrameBacking(panel, cornerRadius: cornerRadius)
         mbkLog("PopoverController", "setupPanel — initialSize=(\(initialSize.width),\(initialSize.height))")
     }
@@ -384,6 +387,7 @@ public final class MBKPopoverController: NSObject {
             mbkLog("PopoverController", "applyContentSize — aborted: no screen")
             return
         }
+        // Left-align panel to button's leading edge, clamped within the visible screen frame.
         let clampedX = min(anchorX, screen.visibleFrame.maxX - clamped.width)
         let newOrigin = NSPoint(
             x: round(max(clampedX, screen.visibleFrame.minX)),
